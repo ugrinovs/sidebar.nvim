@@ -1,8 +1,8 @@
-local ui = require "personal.buffer-list.ui"
+local ui = require "sidebar.ui"
 
-local augroups = require "personal.buffer-list.augroups"
+local augroups = require "sidebar.augroups"
 
-local list = require "personal.buffer-list.list"
+local list = require "sidebar.list"
 local M = {}
 
 M._state = {
@@ -35,7 +35,7 @@ M.setup = function(opts)
     "n",
     "<leader>l",
     M.toggle,
-    -- '<cmd>lua require("personal.buffer-list").toggle()<CR>',
+    -- '<cmd>lua require("sidebar").toggle()<CR>',
     { noremap = true, silent = true}
   )
 
