@@ -1,18 +1,66 @@
 local ui = require "sidebar.ui"
 
+
+
+local utils = require "sidebar.utils"
+
 local augroups = require "sidebar.augroups"
 
 local list = require "sidebar.list"
+
 local M = {}
+
+M.create_default_mappings = function()
+  return {
+    n = {
+      ["<CR>"] = {
+        rhs = function()
+          local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+          local bufnr = vim.iter(M._state.buf_list):find(function(_, v)
+            return v.line == cursor_line
+          end)
+
+          if vim.api.nvim_win_is_valid(M._state.current_win) then
+            vim.api.nvim_set_current_win(M._state.current_win)
+          else
+            vim.command "vs"
+            M._state.current_win = vim.api.nvim_get_current_win()
+          end
+          vim.api.nvim_set_current_buf(bufnr)
+        end,
+        options = { noremap = true, silent = true, buffer = ui._state.buffer },
+      },
+      ["q"] = {
+        rhs = M.toggle,
+        options = { noremap = true, silent = true },
+      },
+      ["d"] = {
+        rhs = function()
+          local cur_buf = vim.api.nvim_get_current_buf()
+          if not cur_buf == ui._state.buffer then
+            return
+          end
+          local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
+          local bufnr = vim.iter(M._state.buf_list):find(function(_, v)
+            return v.line == cursor_line
+          end)
+          vim.api.nvim_buf_delete(bufnr, {})
+        end,
+        options = { noremap = true, silent = true, buffer = ui._state.buffer },
+      },
+    },
+  }
+end
 
 M._state = {
   buf_list = {},
   first_draw = false,
   current_win = nil,
 }
+M._opts = {}
 local default_opts = {
   relative = "editor",
-  position = "left",
+  position = "right",
   size = "10%",
 }
 
@@ -23,61 +71,47 @@ M.setup = function(opts)
   end
 
   local options = vim.tbl_extend("force", default_opts, opts or {})
-  ui.init(options)
-  augroups.init(M.on_event, M.on_buf_event)
+  local keymaps = vim.tbl_extend("force", M.create_default_mappings(), opts.keymaps or {})
 
+  M._opts = options
 
-  M.draw()
-  M._state.first_draw = true
+  ui.init(options, keymaps)
+  augroups.init {
+    buffer_change = M.on_event,
+    buffer_entere = M.on_buf_event,
+    buffer_leave = function(event)
+      local is_sidebar = utils.is_nvim_sidebar_buf()
+      if event.event == "BufWipeout" then
+        if utils.is_nvim_sidebar_buf(event.buf) then
+          vim.schedule(function()
+            M.reload()
+          end)
+        end
+        return
+      end
+      if not is_sidebar then
+        return
+      end
+      if event.event == "BufLeave" then
+        -- -- disallow changing this buffer
+        local ev_bufnr = vim.fn.str2nr(event.buf)
+        vim.schedule(function()
+          if ev_bufnr == ui._split.bufnr and ui._split.winid == vim.api.nvim_get_current_win() then
+            vim.api.nvim_set_current_buf(ui._state.buffer)
+          end
+        end)
+      end
+    end,
+  }
 
   -- TODO add keymaps and option to change keymaps
-  vim.keymap.set(
-    "n",
-    "<leader>l",
-    M.toggle,
-    -- '<cmd>lua require("sidebar").toggle()<CR>',
-    { noremap = true, silent = true}
-  )
-
-  vim.keymap.set(
-    "n",
-    "<CR>",
-    function()
-      local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
-      local bufnr = vim.iter(M._state.buf_list)
-      :find(function(_, v)
-        return v.line == cursor_line
-      end)
-      print('win', ui._state.winnr, M._state.current_win)
-
-      if vim.api.nvim_win_is_valid(M._state.current_win) then
-        vim.api.nvim_set_current_win(M._state.current_win)
-      else
-        vim.command("vs")
-        M._state.current_win = vim.api.nvim_get_current_win()
-      end
-      vim.api.nvim_set_current_buf(bufnr)
-    end,
-    { noremap = true, silent = true, buffer = ui._state.buffer }
-  )
-
-    vim.keymap.set(
-    "n",
-    "d",
-    function()
-      local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
-      local bufnr = vim.iter(M._state.buf_list)
-      :find(function(_, v)
-        return v.line == cursor_line
-      end)
-      vim.api.nvim_buf_delete(bufnr, {})
-    end,
-    { noremap = true, silent = true, buffer = ui._state.buffer }
-  )
-
 end
 
 M.draw = function()
+  if not M._state.first_draw then
+    M._state.first_draw = true
+  end
+
   M._state.buf_list = list.get_buffers()
   local bufnr_table = {}
   local bufname_table = {}
@@ -88,12 +122,12 @@ M.draw = function()
 
     table.insert(bufname_table, vim.fs.basename(M._state.buf_list[key].name))
 
-    table.insert(buf_modified_table, M._state.buf_list[key].modified and " ●" or "")
+    table.insert(buf_modified_table, M._state.buf_list[key].modified and "● " or "")
   end
 
   local key_column_width = M.get_column_width(bufnr_table)
   local name_column_width = M.get_column_width(bufname_table)
-  local modified_column_width = M.get_column_width(buf_modified_table)
+  -- local modified_column_width = M.get_column_width(buf_modified_table)
 
   local line_table = {}
   local hl_table = {}
@@ -103,31 +137,46 @@ M.draw = function()
     local name = bufname_table[i]
     local modified = buf_modified_table[i]
     local key_padding = string.rep(" ", key_column_width - #key)
-    local name_padding = string.rep(" ", name_column_width - #name)
-    local modified_str = modified ~= "" and ("  " .. modified) or ""
-    local modified_padding = string.rep(" ", modified_column_width - #modified_str + 3)
+    local name_padding = string.rep(" ", name_column_width - #name + 1)
+    local modified_padding = string.rep(" ", 2)
+
+    local modified_str = modified ~= "" and ("" .. modified) or modified_padding
+    -- local modified_padding = string.rep(" ", modified_column_width - #modified_str + 3)
     local path = vim.fn.join(
       vim
         .iter(vim.fn.split(M._state.buf_list[tonumber(key)].name, "/"))
         :filter(function(v)
           return v ~= ""
-        end):rev()
+        end)
+        :filter(function(v)
+          return v ~= name
+        end)
+        :rev()
         :totable(),
       "/"
     )
-    local line = key_padding .. key .. " " .. name .. name_padding .. modified_str .. modified_padding .. " " .. path
+    local line = key_padding .. key .. " " .. modified_str .. name .. name_padding .. " " .. path
 
-    local mod_path = modified_str .. modified_padding .. " " .. path
+    local name_path = name .. name_padding .. " " .. path
+    local mod_path = modified_str .. name .. name_padding .. " " .. path
 
-    local modified_pos = modified ~= "" and (vim.fn.strlen(line) - vim.fn.strlen(mod_path) + 3) or nil
+    local name_pos = vim.fn.strlen(line) - vim.fn.strlen(name_path)
+    local modified_pos = modified ~= "" and (vim.fn.strlen(line) - vim.fn.strlen(mod_path)) or nil
     local path_pos = vim.fn.strlen(line) - vim.fn.strlen(path)
+
+    table.insert(hl_table, {
+      line = i - 1,
+      col_start = name_pos,
+      col_end = name_pos + string.len(name),
+      hl_group = "Character",
+    })
 
     if modified_pos then
       table.insert(hl_table, {
         line = i - 1,
         col_start = modified_pos,
         col_end = modified_pos + 1,
-        hl_group = "Character",
+        hl_group = "String",
       })
     end
 
@@ -135,7 +184,7 @@ M.draw = function()
       line = i - 1,
       col_start = path_pos,
       col_end = -1,
-      hl_group = "ModeMsg",
+      hl_group = "LineNr",
     })
 
     table.insert(line_table, line)
@@ -198,6 +247,17 @@ M.toggle = function()
   end
 end
 
+M.reload = function()
+  M._state = {
+    buf_list = {},
+    first_draw = false,
+    current_win = nil,
+  }
+  ui.reload()
+  augroups.reload()
+  M.setup(M._opts)
+end
+
 M.on_event = function(event)
   local is_valid_file = vim.api.nvim_get_option_value("buftype", {
     buf = event.buf,
@@ -223,7 +283,10 @@ M.on_buf_event = function(event)
   exists = M._state.buf_list[event.buf] ~= nil
   if ui._state.is_open and vim.api.nvim_buf_is_loaded(event.buf) and is_valid_file and exists then
     vim.schedule(function()
-      M.highlight_line(event.buf)
+      -- if it still exists
+      if utils.is_nvim_sidebar_buf(event.buf) then
+        M.highlight_line(event.buf)
+      end
     end)
   end
 end
